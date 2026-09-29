@@ -1,51 +1,104 @@
 /**
  * The only module that touches the document.
  *
- * Applying a scale is a single inline `zoom` declaration on the root element,
- * because the modern `zoom` property scales the used value of `width`, `height`
- * and `font-size` — so nested percentage layouts reflow and the shell still
- * covers the viewport at every rung. A stylesheet rule would be equally correct
- * but couples the effect to a stylesheet having loaded, which is exactly the
- * failure this plugin must not have.
+ * Scaling is a `transform` on the application root, not a `zoom` declaration on
+ * the document. That choice is forced by one measured fact: `zoom` lands inside
+ * `getBoundingClientRect()`, so a floating layer positioned from a measured rect
+ * is scaled a second time when `position: fixed` resolves against the zoomed
+ * initial containing block. Measured gap below an anchored button, where 8px is
+ * correct:
+ *
+ * | scale | `zoom` on `:root` | `transform` on the shell |
+ * |---|---|---|
+ * | 100% | 8 | 8 |
+ * | 70% | -201 | 8 |
+ * | 110% | 77 | 8 |
+ * | 125% | 179 | 8 |
+ * | 150% | 348 | 8 |
+ *
+ * A `transform` leaves the used geometry of every element untouched, so a menu
+ * anchored to a button keeps landing on the button at every scale.
+ *
+ * The cost of a transform is that it does not reflow: the shell would keep its
+ * unscaled layout size and leave a gap at the right and bottom edges. That is
+ * what the inverse sizing compensates — the shell is laid out at `100% / scale`
+ * and then scaled by `scale`, so its laid-out box is the bounding box of its
+ * rendered box again and its percentage children still divide the real viewport.
  */
 
 import { DEFAULT_SCALE, MAX_SCALE, MIN_SCALE } from './scale.js';
+
+/**
+ * Candidates for the scaling root, innermost first.
+ *
+ * A dedicated application root is preferred so the document, and anything the
+ * host page mounts beside the application, stay outside the transform.
+ */
+const ROOT_SELECTORS = ['#root', '[data-dsh-app-root]', 'body'] as const;
 
 /** Root declaration id owning the overflow lock. */
 const OVERFLOW_STYLE_ID = 'dsh-plugin-ui-zoom/overflow';
 
 /**
- * While a scale is active the zoomed coordinate space leaves the document
- * scrollable in its own units; clipping it removes a stray scrollbar without
- * affecting the shell's internal scroll containers.
+ * Find the element to scale.
+ * @param doc - the document to search.
+ * @returns the scaling root, or undefined when none of the candidates exist.
  */
-const OVERFLOW_CSS = 'html{overflow:hidden}';
+export function findRoot(doc: Document): HTMLElement | undefined {
+	for (const selector of ROOT_SELECTORS) {
+		const element = doc.querySelector(selector);
+		if (element instanceof HTMLElement) return element;
+	}
+	return undefined;
+}
 
 /**
- * Apply a scale to the document.
- * @param scale - the accepted scale.
- * @param root - the root element to scale.
+ * Apply a scale to the application root.
+ *
+ * `transform-origin: 0 0` is load-bearing: with the default centre origin the
+ * shell would be laid out in one place and painted around the viewport centre,
+ * leaving the top-left corner adrift.
+ * @param scale - the scale to apply.
+ * @param root - the element to scale.
  */
 export function applyScale(scale: number, root: HTMLElement): void {
 	const held = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
-	// `setProperty` rather than `style.zoom = …`: the two are equivalent in a
-	// browser, but only the property API round-trips under every DOM
-	// implementation (and it pairs with the `removeProperty` below).
-	if (held === DEFAULT_SCALE) root.style.removeProperty('zoom');
-	else root.style.setProperty('zoom', String(held));
+	const { style } = root;
+	if (held === DEFAULT_SCALE) {
+		style.removeProperty('transform');
+		style.removeProperty('transform-origin');
+		style.removeProperty('width');
+		style.removeProperty('height');
+		return;
+	}
+	style.setProperty('transform-origin', '0 0');
+	style.setProperty('transform', `scale(${String(held)})`);
+	style.setProperty('width', `calc(100% / ${String(held)})`);
+	style.setProperty('height', `calc(100% / ${String(held)})`);
 }
+
 /**
- * Undo everything this plugin wrote to the document.
- * @param root - the root element to restore.
- * @param doc - the document owning the overflow lock.
+ * Undo every write this plugin made to the document.
+ * @param doc - the document to restore.
  */
-export function clearScale(root: HTMLElement, doc: Document): void {
-	root.style.removeProperty('zoom');
+export function clearScale(doc: Document): void {
+	const root = findRoot(doc);
+	if (root !== undefined) {
+		const { style } = root;
+		style.removeProperty('transform');
+		style.removeProperty('transform-origin');
+		style.removeProperty('width');
+		style.removeProperty('height');
+	}
 	doc.getElementById(OVERFLOW_STYLE_ID)?.remove();
 }
 
 /**
- * Install or remove the overflow lock.
+ * Keep the document itself from growing a stray scrollbar.
+ *
+ * With the transform approach the shell no longer changes the document's scroll
+ * metrics, so this is a guard rather than a requirement: it is removed entirely
+ * at 100%, and keeps a fractional scale from producing an edge scrollbar.
  * @param active - whether a non-default scale is applied.
  * @param doc - the document to lock.
  */
@@ -59,7 +112,7 @@ export function setOverflowLock(active: boolean, doc: Document): void {
 	const style = doc.createElement('style');
 	style.id = OVERFLOW_STYLE_ID;
 	style.dataset.plugin = 'dsh-plugin-ui-zoom';
-	style.textContent = OVERFLOW_CSS;
+	style.textContent = 'html{overflow:hidden}';
 	doc.head.append(style);
 }
 
@@ -86,8 +139,8 @@ export interface Readout {
 /**
  * Create the transient readout shown when the user changes the scale.
  *
- * It exists so a key press has visible feedback without permanently occupying
- * screen space: the element fades in, then hides itself.
+ * It is mounted on `document.body`, outside the scaled root, so its own text is
+ * never rescaled.
  * @param doc - the document to mount into.
  * @param timeoutMs - how long the readout stays visible.
  * @returns the readout handle.

@@ -118,33 +118,38 @@ function install(options: { registerThrows?: boolean; stored?: string } = {}) {
 	const readout = fakeReadout();
 	const harness = fakeWindow();
 
-	const setProperty = vi.fn();
-	const removeProperty = vi.fn();
 	/**
-	 * Order every style operation by a single shared clock.
+	 * A real element (so `findRoot`'s `instanceof HTMLElement` check passes) whose
+	 * inline style records every call in one shared order.
 	 *
 	 * Two separate mocks cannot be ordered by their own call indices — both start
-	 * at 0 — so the chronological order has to come from a counter they share.
+	 * at 0 — so the chronology comes from a counter they share.
 	 */
 	let clock = 0;
 	const operations: { at: number; property: string; value: string | null }[] = [];
-	const root = {
-		style: {
+	const record = (property: string, value: string | null) => {
+		operations.push({ at: clock++, property, value });
+	};
+	const element = document.createElement('div');
+	element.id = 'root';
+	Object.defineProperty(element, 'style', {
+		configurable: true,
+		value: {
 			setProperty: (property: string, value: string) => {
-				operations.push({ at: clock++, property, value });
-				setProperty(property, value);
+				record(property, value);
 			},
 			removeProperty: (property: string) => {
-				operations.push({ at: clock++, property, value: null });
-				removeProperty(property);
+				record(property, null);
 			},
 		},
-	} as unknown as HTMLElement;
+	});
+	const root = element;
 
 	// Only the document members the controller actually touches. The overflow lock
 	// and the readout are asserted directly in tests/unit/document.test.ts.
 	const doc = {
-		documentElement: root,
+		documentElement: document.documentElement,
+		querySelector: (selector: string) => (selector === '#root' ? root : null),
 		getElementById: () => null,
 		createElement: () => ({ style: {}, dataset: {} }),
 		head: { append: () => {} },
@@ -159,15 +164,17 @@ function install(options: { registerThrows?: boolean; stored?: string } = {}) {
 		readout: () => readout.readout,
 	});
 	/**
-	 * The scale currently declared on the root.
-	 * @returns the value, or null when no declaration is active.
+	 * The scale currently declared on the root, read from its transform.
+	 * @returns the scale, or null when no declaration is active.
 	 */
 	const declared = () => {
 		const relevant = operations
-			.filter((entry) => entry.property === 'zoom')
+			.filter((entry) => entry.property === 'transform')
 			.sort((left, right) => left.at - right.at);
 		const last = relevant[relevant.length - 1];
-		return last === undefined ? null : last.value;
+		if (last === undefined || last.value === null) return null;
+		const match = /scale\(([\d.]+)\)/.exec(last.value);
+		return match?.[1] ?? null;
 	};
 	/** Dispatch a press on this install's own window. */
 	const dispatch = (code: string, mods: Record<string, boolean> = {}) => harness.dispatch(code, mods);
@@ -470,9 +477,14 @@ describe('the zoom controller', () => {
 			return () => {};
 		};
 		const storage = memoryStorage();
-		const root = { style: { setProperty: () => {}, removeProperty: () => {} } } as unknown as HTMLElement;
+		const element = document.createElement('div');
+		Object.defineProperty(element, 'style', {
+			configurable: true,
+			value: { setProperty: () => {}, removeProperty: () => {} },
+		});
 		const doc = {
-			documentElement: root,
+			documentElement: document.documentElement,
+			querySelector: (selector: string) => (selector === '#root' ? element : null),
 			getElementById: () => null,
 			createElement: () => ({ style: {}, dataset: {} }),
 			head: { append: () => {} },

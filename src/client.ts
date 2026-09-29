@@ -19,6 +19,7 @@ import {
 	createReadout,
 	applyScale,
 	clearScale,
+	findRoot,
 	setOverflowLock,
 	type Readout,
 } from './document.js';
@@ -154,10 +155,22 @@ function command(id: string, code: string, label: string, run: () => void): Shor
  */
 export function createController(options: ControllerOptions): Controller {
 	const { ctx, doc, win, storage, t } = options;
-	const root = doc.documentElement;
 	const nav = win.navigator;
 	const mac = isMacPlatform(nav);
 	const readout = (options.readout ?? createReadout)(doc);
+
+	// Resolved lazily: a scale can be applied before the shell has mounted its
+	// root, and the resolver is re-run each time so a replaced root is picked up.
+	let appliedRoot: HTMLElement | undefined;
+	/**
+	 * Scale the application root, if it exists yet.
+	 * @param value - the scale to apply.
+	 */
+	const scaleRoot = (value: number): void => {
+		appliedRoot = findRoot(doc);
+		if (appliedRoot === undefined) return;
+		applyScale(value, appliedRoot);
+	};
 
 	let scale = 1;
 	let handledAt = 0;
@@ -180,7 +193,7 @@ export function createController(options: ControllerOptions): Controller {
 	 */
 	const publish = (next: number, announce: boolean): void => {
 		scale = next;
-		applyScale(scale, root);
+		scaleRoot(scale);
 		setOverflowLock(scale !== DEFAULT_SCALE, doc);
 		storage.write(scale);
 		if (announce) readout.show(scalePercent(scale));
@@ -239,19 +252,26 @@ export function createController(options: ControllerOptions): Controller {
 	const restored = storage.read() ?? DEFAULT_SCALE;
 	publish(restored, false);
 	trace(`C:restored=${String(restored)}`);
+	trace(`C:root=${appliedRoot === undefined ? '<absent>' : appliedRoot.tagName.toLowerCase()}`);
 
-	// Self-check: prove the inline declaration actually reaches the document and
-	// is readable back, then restore. A platform where `zoom` is accepted but not
-	// honoured would otherwise leave the gestures silently inert.
+	// Self-check: prove the transform actually reaches the engine and reads back,
+	// then restore. A platform that dropped the declaration would otherwise leave
+	// the gestures silently inert, which is indistinguishable from a broken
+	// keybinding when all you can see is that nothing moves.
 	try {
-		root.style.setProperty('zoom', '0.5');
-		// Read the string BEFORE restoring: `getPropertyValue` returns a live value,
-		// so reading it afterwards would report the restored scale instead.
-		const effective = win.getComputedStyle(root).getPropertyValue('zoom').trim();
-		applyScale(restored, root);
-		trace(`C:selftest=${effective === '' ? '<empty>' : effective}`);
+		const probe = findRoot(doc);
+		if (probe === undefined) {
+			trace('C:selftest-skipped:no-root');
+		} else {
+			applyScale(0.5, probe);
+			// Read BEFORE restoring: `getComputedStyle` returns a live declaration, so
+			// reading it afterwards would report the restored matrix instead.
+			const effective = win.getComputedStyle(probe).transform;
+			applyScale(restored, probe);
+			trace(`C:selftest=${effective === '' || effective === 'none' ? '<none>' : effective}`);
+		}
 	} catch (error) {
-		applyScale(restored, root);
+		scaleRoot(restored);
 		trace(`C:selftest-failed:${describe(error)}`);
 	}
 
@@ -282,7 +302,8 @@ export function createController(options: ControllerOptions): Controller {
 		() => () => {
 			win.removeEventListener('keydown', onKeydown, true);
 			readout.dispose();
-			clearScale(root, doc);
+			clearScale(doc);
+			appliedRoot = undefined;
 		},
 		`${LOCALE_NS}: state`,
 	);

@@ -1,93 +1,129 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyScale, clearScale, createReadout, setOverflowLock } from '../../src/document.js';
-import type { Readout } from '../../src/document.js';
+import {
+	applyScale,
+	clearScale,
+	createReadout,
+	findRoot,
+	setOverflowLock,
+	type Readout,
+} from '../../src/document.js';
 
 /** The id the overflow lock is stored under. */
 const LOCK_ID = 'dsh-plugin-ui-zoom/overflow';
 
 /**
- * A root element whose inline style is fully observable.
+ * An element stand-in whose inline style is fully observable.
  *
- * jsdom's `CSSStyleDeclaration` has no `zoom` in its property database, so
- * neither `style.zoom = …` nor `getPropertyValue('zoom')` round-trips there.
- * The plugin's contract is about *which CSS property API it calls*, so that is
- * what these tests assert, via a recording style object. The real property is
- * exercised separately in a real browser by `tests/system/`.
- * @returns the element stand-in and its recorded calls.
+ * jsdom's `CSSStyleDeclaration` has no `transform` in its property database, so
+ * neither `style.transform = …` nor `getPropertyValue('transform')` round-trips
+ * there. The plugin's contract is about *which CSS property API it calls*, so
+ * that is what these tests assert, via a recording style object. Real rendering
+ * is exercised in a real engine by `tests/system/`.
+ * @returns the element stand-in and its recorder.
  */
-function recordingRoot() {
-	const set = vi.fn();
-	const remove = vi.fn();
+function recordingElement() {
+	const operations: { at: number; property: string; value: string | null }[] = [];
+	let clock = 0;
+	const record = (property: string, value: string | null) => {
+		operations.push({ at: clock++, property, value });
+	};
 	const style = {
 		setProperty: (property: string, value: string) => {
-			set(property, value);
+			record(property, value);
 		},
 		removeProperty: (property: string) => {
-			remove(property);
+			record(property, null);
 		},
 	};
 	return {
 		element: { style } as unknown as HTMLElement,
-		set,
-		remove,
 		/**
-		 * The scale currently declared, derived from the recorded calls.
+		 * The value currently declared for one property.
+		 * @param property - the CSS property name.
 		 * @returns the value, or null when no declaration is active.
 		 */
-		current(): string | null {
-			const operations = [
-				...set.mock.calls.map(([property, value], index) => ({
-					index,
-					property,
-					kind: 'set' as const,
-					value: value as string | null,
-				})),
-				...remove.mock.calls.map(([property], index) => ({
-					index,
-					property,
-					kind: 'remove' as const,
-					value: null,
-				})),
-			]
-				.filter((entry) => entry.property === 'zoom')
-				.sort((left, right) => left.index - right.index);
-			const last = operations[operations.length - 1];
-			if (last === undefined || last.kind === 'remove') return null;
-			return last.value;
+		declared(property: string): string | null {
+			const relevant = operations
+				.filter((entry) => entry.property === property)
+				.sort((left, right) => left.at - right.at);
+			const last = relevant[relevant.length - 1];
+			return last === undefined ? null : last.value;
+		},
+		/** Every property touched, in order. */
+		touched(): string[] {
+			return operations.map((entry) => entry.property);
 		},
 	};
 }
 
 describe('applyScale', () => {
-	it('writes the scale as a root declaration', () => {
-		const root = recordingRoot();
+	it('scales with a transform and compensates the layout size', () => {
+		const root = recordingElement();
 		applyScale(1.25, root.element);
-		expect(root.set).toHaveBeenCalledWith('zoom', '1.25');
-		expect(root.current()).toBe('1.25');
+		expect(root.declared('transform')).toBe('scale(1.25)');
+		expect(root.declared('transform-origin')).toBe('0 0');
+		expect(root.declared('width')).toBe('calc(100% / 1.25)');
+		expect(root.declared('height')).toBe('calc(100% / 1.25)');
 	});
 
-	it('removes the declaration at 100% so the layout is untouched', () => {
-		const root = recordingRoot();
+	it('does not declare a zoom property', () => {
+		// `zoom` is the mechanism this module deliberately avoids: it lands inside
+		// getBoundingClientRect(), which makes an anchored floating layer drift.
+		const root = recordingElement();
+		applyScale(1.25, root.element);
+		expect(root.touched()).not.toContain('zoom');
+	});
+
+	it('removes every declaration at 100% so the layout is untouched', () => {
+		const root = recordingElement();
 		applyScale(1.5, root.element);
 		applyScale(1, root.element);
-		expect(root.remove).toHaveBeenCalledWith('zoom');
-		expect(root.current()).toBeNull();
+		expect(root.declared('transform')).toBeNull();
+		expect(root.declared('transform-origin')).toBeNull();
+		expect(root.declared('width')).toBeNull();
+		expect(root.declared('height')).toBeNull();
 	});
 
 	it('clamps a value outside the ladder', () => {
-		const above = recordingRoot();
+		const above = recordingElement();
 		applyScale(99, above.element);
-		expect(above.current()).toBe('2');
+		expect(above.declared('transform')).toBe('scale(2)');
 
-		const below = recordingRoot();
+		const below = recordingElement();
 		applyScale(0.01, below.element);
-		expect(below.current()).toBe('0.5');
+		expect(below.declared('transform')).toBe('scale(0.5)');
 	});
 
-	it('treats a fractional rung as itself', () => {
-		const root = recordingRoot();
+	it('keeps fractional rungs exact', () => {
+		const root = recordingElement();
 		applyScale(1.25, root.element);
-		expect(root.current()).toBe('1.25');
+		expect(root.declared('width')).toBe('calc(100% / 1.25)');
+	});
+});
+
+describe('findRoot', () => {
+	beforeEach(() => {
+		document.body.innerHTML = '';
+	});
+
+	it('prefers the application root', () => {
+		document.body.innerHTML = '<div id="root"></div>';
+		expect(findRoot(document)?.id).toBe('root');
+	});
+
+	it('falls back to the body when no application root exists', () => {
+		expect(findRoot(document)).toBe(document.body);
+	});
+
+	it('accepts the data attribute as an alternative root marker', () => {
+		document.body.innerHTML = '<div data-dsh-app-root></div>';
+		const found = findRoot(document);
+		expect(found?.hasAttribute('data-dsh-app-root')).toBe(true);
+	});
+
+	it('returns undefined when nothing matches', () => {
+		const empty = { querySelector: () => null } as unknown as Document;
+		expect(findRoot(empty)).toBeUndefined();
 	});
 });
 
@@ -122,18 +158,16 @@ describe('clearScale', () => {
 	});
 
 	it('undoes every document write', () => {
-		const root = recordingRoot();
-		applyScale(1.5, root.element);
 		setOverflowLock(true, document);
-		clearScale(root.element, document);
-		expect(root.remove).toHaveBeenCalledWith('zoom');
+		clearScale(document);
 		expect(document.getElementById(LOCK_ID)).toBeNull();
 	});
 
-	it('is idempotent', () => {
-		const root = recordingRoot();
-		clearScale(root.element, document);
-		expect(() => clearScale(root.element, document)).not.toThrow();
+	it('is idempotent, including when no root exists', () => {
+		const empty = { querySelector: () => null, getElementById: () => null } as unknown as Document;
+		expect(() => clearScale(empty)).not.toThrow();
+		clearScale(document);
+		expect(() => clearScale(document)).not.toThrow();
 	});
 });
 
@@ -169,6 +203,12 @@ describe('createReadout', () => {
 		expect(hud()?.dataset.visible).toBe('true');
 	});
 
+	it('mounts the readout on the body, outside the scaled root', () => {
+		readout = createReadout(document);
+		readout.show(110);
+		expect(hud()?.parentElement).toBe(document.body);
+	});
+
 	it('adds exactly one stylesheet and removes it on dispose', () => {
 		readout = createReadout(document);
 		expect(document.querySelectorAll('style[data-plugin="dsh-plugin-ui-zoom"]').length).toBe(1);
@@ -193,7 +233,6 @@ describe('createReadout', () => {
 		readout.show(110);
 		expect(hud()?.textContent).toBe('110%');
 		vi.advanceTimersByTime(100);
-		// 500ms after the second gesture: still visible.
 		expect(hud()?.dataset.visible).toBe('true');
 		vi.advanceTimersByTime(400);
 		expect(hud()?.dataset.visible).toBe('false');

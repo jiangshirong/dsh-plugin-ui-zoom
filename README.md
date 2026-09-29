@@ -145,12 +145,38 @@ Electron forwards a registry-matched binding to the page as ordinary input, so
 one physical press can surface on both paths. A 60 ms guard window keeps that
 press to a single step.
 
-The scale itself is one inline `zoom` declaration on the root element.
-`zoom` scales the *used* value of `width`, `height` and `font-size` in modern
-engines, so nested percentage layouts reflow and the shell keeps covering the
-viewport at every rung. A stylesheet rule would be equally correct but would
-couple the effect to a stylesheet having loaded — which is exactly the failure
-this plugin must not have.
+The scale itself is a `transform` on the application root, with inverse sizing
+so the shell still covers the window:
+
+```css
+transform-origin: 0 0;
+transform: scale(S);
+width:  calc(100% / S);
+height: calc(100% / S);
+```
+
+The transform is what keeps the rest of the UI correct. A `zoom` declaration is
+the more obvious choice, but it lands inside `getBoundingClientRect()`, so a
+floating layer positioned from a measured rect gets scaled a second time when
+`position: fixed` resolves against the zoomed initial containing block. Measured
+gap below an anchored button, where 8px is correct:
+
+| scale | `zoom` on `:root` | `transform` on the shell |
+|---|---|---|
+| 100% | 8 | 8 |
+| 70% | −201 | 8 |
+| 110% | 77 | 8 |
+| 125% | 179 | 8 |
+| 150% | 348 | 8 |
+
+A transform leaves every element's used geometry alone, so a menu anchored to a
+button keeps landing on the button at every scale. `tests/system/` asserts that
+gap at seven different scales; it is the regression this mechanism exists for.
+The inverse sizing is the price of using a transform: a transform does not
+reflow, so without it the shell would keep its unscaled layout box and leave a
+gap at the right and bottom edges. Laying the shell out at `100% / S` and then
+scaling it by `S` restores the bounding box, so its percentage children still
+divide the real viewport.
 
 ### The module-table envelope
 
@@ -203,7 +229,8 @@ journal in the page's own storage, and the Host half mirrors that journal to
 | `A:apply` | the Host mounted the plugin and `apply` was called |
 | `A:locale-failed` / `A:controller-failed` | that step threw, with the message |
 | `C:restored=<scale>` | the stored preference was applied |
-| `C:selftest=<value>` | the inline `zoom` declaration read back from the engine (`<empty>` means accepted-but-inert) |
+| `C:root=<tag>` | the element that was scaled, or `<absent>` when the shell had not mounted a root yet |
+| `C:selftest=<value>` | the applied transform read back from the engine (`<none>` means accepted-but-inert) |
 | `C:listening` | the key listener is installed |
 | `A:ready:<scale>` | the plugin is fully mounted |
 | `K:<code>:<mods>` | a key event reached the document (recorded by a separate witness listener) |
@@ -227,22 +254,27 @@ can never look like a green run.
 These are properties of doing interface zoom from inside a sandboxed renderer,
 not bugs that more code would fix:
 
-- **`getBoundingClientRect()` reports scaled coordinates.** Any layout code that
-  measures an element and then positions something in document pixels sees the
-  scaled value while the scale is not 100%. The shipped shell has not been
-  observed to misbehave, but a plugin that does pointer-driven geometry should
-  divide by the scale.
 - **The document is clipped while scaled** (`html{overflow:hidden}`, installed
-  only while the scale is not 100%). Without it the zoomed coordinate space adds
-  a stray scrollbar; with it, a page that relied on document-level scrolling
-  would scroll less. The shell scrolls inside its own containers.
-- **`vw`/`vh` units are scaled too**, which is the correct behaviour for a zoomed
-  coordinate space and the reason the shell keeps fitting the window.
+  only while the scale is not 100%). With the transform mechanism the document's
+  own scroll metrics no longer change, so this is a guard against a fractional
+  scale producing an edge scrollbar rather than a requirement. A page that relied
+  on document-level scrolling would scroll less; the shell scrolls inside its own
+  containers.
+- **The root element is addressed by selector.** The plugin scales `#root`, then
+  `[data-dsh-app-root]`, then `body`. A composition with none of those would scale
+  the body, which is still correct but also scales anything the host page mounts
+  beside the application.
+- **Layout is measured in document pixels, so a plugin that mixes its own
+  scaling with measured rects must stay consistent.** The transform does not
+  change any element's used geometry, which is precisely why anchored layers now
+  work; the remaining wrinkle is that the *visual* size of a box differs from its
+  layout size by the scale, which is what the inverse sizing reconciles at the
+  root.
 - **The proper mechanism would be `webFrame.setZoomLevel()`.** That is the
-  Electron browser zoom, with no layout-unit or measurement side effects, but the
-  desktop preload does not expose it to the renderer. If a future Harness exposes
-  a zoom bridge on `dshDesktop`, this plugin should be rewritten to call it and
-  the CSS path retired.
+  Electron browser zoom, with no layout-unit or measurement side effects at all,
+  but the desktop preload does not expose it to the renderer. If a future Harness
+  exposes a zoom bridge on `dshDesktop`, this plugin should be rewritten to call
+  it and the CSS path retired.
 
 ## License
 

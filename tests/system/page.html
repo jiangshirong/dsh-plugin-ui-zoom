@@ -3,10 +3,26 @@
 <head>
 <meta charset="utf-8">
 <title>ui-zoom system harness</title>
-<style>html,body{margin:0;padding:0}#probe{width:200px;height:200px;background:#123}</style>
+<style>
+  html, body { margin: 0; padding: 0; }
+  html, body, #root { height: 100%; }
+  body { overflow: hidden; }
+  /* A stand-in for the application shell: a full-height flex column. */
+  #root { display: flex; flex-direction: column; }
+  #probe { width: 200px; height: 200px; background: #123; flex: none; }
+  #fill { flex: 1; background: #eee; }
+  /* A floating layer anchored to a marker by script, like a real popup menu. */
+  #marker { position: fixed; right: 24px; bottom: 24px; width: 40px; height: 40px; background: #357; }
+  #popup { position: fixed; width: 180px; height: 100px; background: #d33; color: #fff; display: none; }
+</style>
 </head>
 <body>
-<div id="probe"></div>
+<div id="root">
+  <div id="probe"></div>
+  <div id="fill">fill</div>
+</div>
+<div id="marker"></div>
+<div id="popup">popup</div>
 <pre id="out"></pre>
 <script>
 // --- the facade the shell installs in <head> (packages/client/modules bootInjections)
@@ -86,33 +102,71 @@ window.__ModuleLoader__ = {
     rec('effects', effects.length);
 
     const key = (code, mods) => window.dispatchEvent(new KeyboardEvent('keydown', Object.assign({ code, bubbles: true, cancelable: true }, mods || {})));
-    const scale = () => document.documentElement.style.getPropertyValue('zoom');
-    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const probe = document.getElementById('probe');
+    const marker = document.getElementById('marker');
+    const popup = document.getElementById('popup');
+    const root = document.getElementById('root');
+    const scale = () => {
+      const value = root.style.getPropertyValue('transform');
+      const match = /scale\(([\d.]+)\)/.exec(value);
+      return match ? match[1] : '(none)';
+    };
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    /**
+     * Anchor the popup below the marker the way an application menu is anchored:
+     * from the marker's own measured rect, written straight into the popup.
+     * @returns the visual gap between the marker's bottom and the popup's top.
+     */
+    const anchoredGap = () => {
+      const rect = marker.getBoundingClientRect();
+      popup.style.left = (rect.left - 180) + 'px';
+      popup.style.top = (rect.bottom + 8) + 'px';
+      popup.style.display = 'block';
+      const markerRect = marker.getBoundingClientRect();
+      const popupRect = popup.getBoundingClientRect();
+      const gap = Math.round(popupRect.top - markerRect.bottom);
+      popup.style.display = 'none';
+      return gap;
+    };
+
     rec('renderedAtRest', Math.round(probe.getBoundingClientRect().width));
+    rec('gapAtRest', anchoredGap());
 
     key('Equal', { ctrlKey: true });
     rec('afterCtrlEqual', scale());
     rec('renderedAt110', Math.round(probe.getBoundingClientRect().width));
+    rec('gapAt110', anchoredGap());
+    rec('shellCoversW', root.getBoundingClientRect().width >= window.innerWidth - 1);
+    rec('shellCoversH', root.getBoundingClientRect().height >= window.innerHeight - 1);
     await wait(120);
+
     key('Equal', { ctrlKey: true });
     rec('afterTwice', scale());
+    rec('gapAt125', anchoredGap());
     await wait(120);
+
     key('Equal', { ctrlKey: true, shiftKey: true });
     rec('afterShiftEqual', scale());
     await wait(120);
+
     key('NumpadAdd', { ctrlKey: true });
     rec('afterNumpadAdd', scale());
+    rec('gapAt175', anchoredGap());
     await wait(120);
+
     key('Minus', { ctrlKey: true });
     rec('afterCtrlMinus', scale());
     await wait(120);
+
     key('NumpadSubtract', { ctrlKey: true });
     rec('afterNumpadSubtract', scale());
     await wait(120);
+
     key('Digit0', { ctrlKey: true });
     rec('afterCtrlZero', scale() || '(none)');
     rec('renderedAfterReset', Math.round(probe.getBoundingClientRect().width));
+    rec('gapAfterReset', anchoredGap());
 
     // A press without the primary modifier must be ignored.
     await wait(120);
@@ -127,17 +181,22 @@ window.__ModuleLoader__ = {
     key('Minus', { ctrlKey: true, altKey: true });
     rec('afterCtrlAltMinus', scale() || '(none)');
 
-    // Persistence: the accepted scale is stored under the documented key.
+    // Persistence and the overflow lock.
     await wait(120);
     key('Equal', { ctrlKey: true });
     rec('storedValue', store.get('dsh.ui-zoom.scale'));
-    rec('overflowLock', document.querySelectorAll('style').length > 0);
+    rec('overflowLock', document.querySelectorAll('style[data-plugin="dsh-plugin-ui-zoom"]').length > 0);
 
-    // Clamping at the ceiling.
+    // Clamping at the ceiling and the floor, with the shell still covering the
+    // window and the anchored layer still on its anchor at both ends.
     for (let index = 0; index < 12; index++) { await wait(90); key('Equal', { ctrlKey: true }); }
     rec('clampedTop', scale());
+    rec('gapAtClampedTop', anchoredGap());
+    rec('shellCoversAtTop', root.getBoundingClientRect().height >= window.innerHeight - 1);
     for (let index = 0; index < 16; index++) { await wait(90); key('Minus', { ctrlKey: true }); }
     rec('clampedBottom', scale());
+    rec('gapAtClampedBottom', anchoredGap());
+    rec('shellCoversAtBottom', root.getBoundingClientRect().height >= window.innerHeight - 1);
 
     report();
   } catch (error) {

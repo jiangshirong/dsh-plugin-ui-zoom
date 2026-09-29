@@ -109,10 +109,36 @@ describe.skipIf(browser === undefined)('the built browser bundle in a real engin
 	});
 
 	it('actually scales rendering, not just the declaration', () => {
-		// The property could be accepted yet do nothing; the geometry is the proof.
+		// The declaration could be accepted yet do nothing; the geometry is the proof.
 		expect(report.get('renderedAtRest')).toBe('200');
 		expect(report.get('renderedAt110')).toBe('220');
 		expect(report.get('renderedAfterReset')).toBe('200');
+	});
+
+	it('keeps an anchored floating layer on its anchor at every scale', () => {
+		// The regression that forced the transform mechanism: `zoom` lands inside
+		// getBoundingClientRect(), so a layer positioned from a measured rect was
+		// scaled a second time and walked away from its anchor as the scale grew.
+		for (const key of [
+			'gapAtRest',
+			'gapAt110',
+			'gapAt125',
+			'gapAt175',
+			'gapAfterReset',
+			'gapAtClampedTop',
+			'gapAtClampedBottom',
+		]) {
+			expect({ key, gap: report.get(key) }).toEqual({ key, gap: '8' });
+		}
+	});
+
+	it('keeps the shell covering the window at every scale', () => {
+		// A transform does not reflow, so without the inverse sizing the shell would
+		// leave a gap at the right and bottom edges.
+		expect(report.get('shellCoversW')).toBe('true');
+		expect(report.get('shellCoversH')).toBe('true');
+		expect(report.get('shellCoversAtTop')).toBe('true');
+		expect(report.get('shellCoversAtBottom')).toBe('true');
 	});
 
 	it('ignores bare, unrelated, and Alt-modified presses', () => {
