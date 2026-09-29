@@ -1,0 +1,56 @@
+{
+  "name": "dsh-plugin-ui-zoom",
+  "version": "1.0.0",
+  "private": false,
+  "description": "Interface zoom for the DeepSeek Harness client — Ctrl+= / Ctrl+- / Ctrl+0",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis-plugin",
+    "zoom",
+    "accessibility"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "test:system": "vitest run --config vitest.system.config.ts",
+    "check": "npm run typecheck && npm run build && npm run test:unit && node scripts/verify-build.mjs && npm run test:system"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "shortcuts",
+        "locale"
+      ]
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "esbuild": "^0.24.2",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

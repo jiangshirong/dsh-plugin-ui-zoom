@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Build both halves
+        run: npm run build
+
+      - name: Assert the module-table envelope
+        run: node scripts/verify-build.mjs
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      # The system suite needs a browser. ubuntu runners ship Chrome, so it runs
+      # here; on a machine without one it reports a skip rather than a pass.
+      - name: System tests in a real engine
+        run: npm run test:system

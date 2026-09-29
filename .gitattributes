@@ -1,0 +1,11 @@
+# Normalize to LF in the repository; stay platform-neutral on checkout.
+* text=auto eol=lf
+
+# Keep binary fixtures untouched.
+*.png binary
+*.jpg binary
+*.woff2 binary
+
+# Generated output is not tracked, but keep diffs sane if it ever is.
+lib/** linguist-generated=true
+package-lock.json linguist-generated=true
