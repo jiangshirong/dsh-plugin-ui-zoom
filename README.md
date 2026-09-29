@@ -69,9 +69,29 @@ entry exists, so a new row must be inserted explicitly.
 
 ### 3. Load it
 
-The plugin appears as a new Loader entry. A reload of the interface is what
-makes the browser half run: the page boots against the module graph the Host
-renders into the index, so open a fresh page (or `F5`).
+A **restart of the application** is what picks the row up, and then a **reload of
+the interface** is what makes the browser half run.
+
+Both steps are load-bearing. Mounting the row gives the Host a new Loader entry,
+but the bundle URL it advertises is composed into the module graph, and adding a
+client entry to an already-running application leaves that graph holding the
+previous composition. A page that was already open loaded its graph at boot, so
+it will not have this row either.
+
+After the restart, the plugin appears as a Loader entry named
+`<profile package name>`, and the interface reload serves its browser half from
+`/plugins/<name>/client.js`.
+
+Two failure modes are worth recognizing:
+
+| Symptom | Cause |
+|---|---|
+| `1 entry did not activate` / `import failed` at startup | the bundle failed to execute — see [The module-table envelope](#the-module-table-envelope) |
+| the row is active but the gestures do nothing | the interface was not reloaded after the row mounted |
+
+The recovery dialog offers to disable third-party plugins, which rewrites the
+profile patch from scratch. If you use it, the `insert` block above has to be
+added again.
 
 ## Use
 
