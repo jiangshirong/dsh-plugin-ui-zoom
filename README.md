@@ -117,15 +117,18 @@ The first three gestures are also registered as application commands
 ## How it works
 
 ```
-src/index.ts     Host half — an inert Cordis row
+src/index.ts     Host half — the diagnostic mirror
 src/client.ts    Browser half — the plugin, the controller, and the two input paths
 src/scale.ts     ladder, clamping, and preference persistence (DOM-free)
 src/gestures.ts  key classification (DOM-free)
 src/document.ts  the only module that writes to the document
-scripts/build.mjs        both halves, including the module-table envelope
-scripts/verify-build.mjs executes the built bundle against the facade
-tests/unit/              logic and controller behaviour
-tests/system/            the built bundle in a real engine
+src/trace.ts     write-only failure journal (browser side)
+src/journal.ts   reading that journal back out of local storage (Node side)
+scripts/build.mjs          both halves, including the module-table envelope
+scripts/verify-build.mjs   executes the built bundle against the facade
+scripts/install-profile.mjs copies a build into a profile with a matching id
+tests/unit/                logic, controller, journal, and trace behaviour
+tests/system/              the built bundle in a real engine
 ```
 
 Two input paths are active at once, deliberately:
@@ -169,6 +172,44 @@ bundle:
 `npm run build` fails if either invariant is broken in the output, and
 `tests/system/` executes the built artifact against the real facade in a real
 engine, so the envelope cannot silently regress.
+
+3. The envelope's `id` must equal the **row name** the bundle is mounted under.
+   That name is baked in at build time, so mounting a bundle under a different
+   row name makes the registration check fail with nothing but `import failed` to
+   show for it. `scripts/install-profile.mjs` copies a build into a profile and
+   rewrites the id to match, which is the supported way to install under a
+   different name:
+
+   ```sh
+   npm run build
+   node scripts/install-profile.mjs ~/.dsh/profiles/desktop @your/name
+   ```
+
+### Diagnosing an activation failure
+
+A sandboxed renderer is opaque from the outside: its console cannot be read, and
+the Harness crash report covers only application-fatal errors. A per-entry
+activation failure therefore leaves no trace anywhere — which makes it very hard
+to tell "the plugin did not run" from "the plugin ran and the gesture did not
+arrive".
+
+This plugin removes that blind spot. The browser half appends short markers to a
+journal in the page's own storage, and the Host half mirrors that journal to
+`$DSH_HOME/ui-zoom-trace.log` once per second:
+
+| Marker | Meaning |
+|---|---|
+| `M:module` | the bundle executed; the factory is registered |
+| `A:apply` | the Host mounted the plugin and `apply` was called |
+| `A:locale-failed` / `A:controller-failed` | that step threw, with the message |
+| `C:restored=<scale>` | the stored preference was applied |
+| `C:selftest=<value>` | the inline `zoom` declaration read back from the engine (`<empty>` means accepted-but-inert) |
+| `C:listening` | the key listener is installed |
+| `A:ready:<scale>` | the plugin is fully mounted |
+| `K:<code>:<mods>` | a key event reached the document (recorded by a separate witness listener) |
+
+The journal is capped at 200 entries, every write is failure-contained, and
+nothing about it changes the plugin's behaviour.
 
 ## Development
 

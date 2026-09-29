@@ -32,6 +32,11 @@ import {
 	type Step,
 } from './scale.js';
 import type { Context, LocaleDict, ShortcutBinding, ShortcutCommand } from './types.js';
+import { describe, trace } from './trace.js';
+
+// Module scope runs before the plugin mounts, so this entry answers the first
+// question a failure raises: did the bundle execute at all?
+trace('M:module');
 
 /** Locale namespace owned by this plugin. */
 export const LOCALE_NS = 'ui-zoom';
@@ -231,9 +236,27 @@ export function createController(options: ControllerOptions): Controller {
 	};
 
 	// Restore the stored preference before the user's first gesture.
-	publish(storage.read() ?? DEFAULT_SCALE, false);
+	const restored = storage.read() ?? DEFAULT_SCALE;
+	publish(restored, false);
+	trace(`C:restored=${String(restored)}`);
+
+	// Self-check: prove the inline declaration actually reaches the document and
+	// is readable back, then restore. A platform where `zoom` is accepted but not
+	// honoured would otherwise leave the gestures silently inert.
+	try {
+		root.style.setProperty('zoom', '0.5');
+		// Read the string BEFORE restoring: `getPropertyValue` returns a live value,
+		// so reading it afterwards would report the restored scale instead.
+		const effective = win.getComputedStyle(root).getPropertyValue('zoom').trim();
+		applyScale(restored, root);
+		trace(`C:selftest=${effective === '' ? '<empty>' : effective}`);
+	} catch (error) {
+		applyScale(restored, root);
+		trace(`C:selftest-failed:${describe(error)}`);
+	}
 
 	win.addEventListener('keydown', onKeydown, true);
+	trace('C:listening');
 
 	/**
 	 * Offer one command to the registry.
@@ -297,11 +320,32 @@ function report(id: string, error: unknown): void {
 
 /**
  * Install the plugin on the client context.
+ *
+ * Every step is failure-contained and traced. The trace exists because an
+ * activation failure inside a sandboxed renderer is otherwise invisible: the
+ * console it writes to cannot be read from outside, and the Host's crash report
+ * covers only application-fatal errors.
  * @param ctx - the plugin context; `shortcuts` and `locale` are injected.
  */
 export function apply(ctx: Context): void {
-	ctx.effect(() => ctx.locale.register(LOCALE_NS, { en: EN, zh: ZH }), `${LOCALE_NS}: dictionaries`);
-	const t = ctx.locale.bind(LOCALE_NS);
+	trace('A:apply');
+
+	try {
+		ctx.effect(
+			() => ctx.locale.register(LOCALE_NS, { en: EN, zh: ZH }),
+			`${LOCALE_NS}: dictionaries`,
+		);
+	} catch (error) {
+		trace(`A:locale-failed:${describe(error)}`);
+	}
+
+	let t: (key: string) => string = (key) => key;
+	try {
+		t = ctx.locale.bind(LOCALE_NS);
+	} catch (error) {
+		trace(`A:bind-failed:${describe(error)}`);
+	}
+
 	const storage = createStorage(
 		(key) => window.localStorage.getItem(key),
 		(key, value) => {
@@ -309,13 +353,39 @@ export function apply(ctx: Context): void {
 		},
 	);
 
-	createController({
-		ctx,
-		doc: window.document,
-		win: window,
-		storage,
-		t,
-	});
+	let controller: Controller | null = null;
+	try {
+		controller = createController({
+			ctx,
+			doc: window.document,
+			win: window,
+			storage,
+			t,
+		});
+	} catch (error) {
+		// The scale itself lives in the controller, so a failure here is the one
+		// worth naming precisely.
+		trace(`A:controller-failed:${describe(error)}`);
+		throw error;
+	}
+
+	// Arrival witness. This observes the page's own key events independently of
+	// the controller, which answers the question a trace cannot: whether the
+	// gesture reaches the document at all.
+	try {
+		window.addEventListener(
+			'keydown',
+			(event) => {
+				const mods = `${event.ctrlKey ? 'c' : ''}${event.metaKey ? 'm' : ''}${event.altKey ? 'a' : ''}${event.shiftKey ? 's' : ''}`;
+				trace(`K:${event.code}:${mods}`);
+			},
+			true,
+		);
+	} catch (error) {
+		trace(`A:witness-failed:${describe(error)}`);
+	}
+
+	trace(`A:ready:${String(controller.scale())}`);
 }
 
 /** Services this plugin needs before it can activate. */

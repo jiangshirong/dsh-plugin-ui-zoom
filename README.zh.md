@@ -103,15 +103,18 @@ macOS 上主修饰键是 `Cmd` 而不是 `Ctrl`。
 ## 实现
 
 ```
-src/index.ts     宿主半边 —— 一个空的 Cordis 行
+src/index.ts     宿主半边 —— 诊断镜像
 src/client.ts    浏览器半边 —— 插件、控制器、两条输入通路
 src/scale.ts     档位、夹紧、偏好持久化（不依赖 DOM）
 src/gestures.ts  按键分类（不依赖 DOM）
 src/document.ts  唯一写文档的模块
-scripts/build.mjs        构建两个半边，含模块表封装
-scripts/verify-build.mjs 用真实门面执行构建产物
-tests/unit/              逻辑与控制器行为
-tests/system/            真实浏览器里跑构建产物
+src/trace.ts     只写的失败痕迹（浏览器侧）
+src/journal.ts   把痕迹从 localStorage 读回来（Node 侧）
+scripts/build.mjs          构建两个半边，含模块表封装
+scripts/verify-build.mjs   用真实门面执行构建产物
+scripts/install-profile.mjs 把构建好的产物装进 profile，并让 id 与行名一致
+tests/unit/                逻辑、控制器、日记读取与痕迹行为
+tests/system/              真实浏览器里跑构建产物
 ```
 
 同时走两条输入通路，这是有意为之：
@@ -143,6 +146,36 @@ Electron 会把注册表命中的绑定当普通输入转发给页面，所以�
 
 `npm run build` 会在产物破坏任一不变量时失败，`tests/system/` 会在真实浏览器里用真实门面执行
 构建产物，所以这层封装不会悄悄回归。
+
+3. 封装里的 `id` 必须等于挂载它的**行名**。这个名字是构建时写死的，所以用不同的行名挂载同一份
+   产物会让注册校验失败，而你能看到的只有 `import failed`。
+   `scripts/install-profile.mjs` 负责把构建产物装进 profile 并把 id 改写成一致——换名安装请用它：
+
+   ```sh
+   npm run build
+   node scripts/install-profile.mjs ~/.dsh/profiles/desktop @your/name
+   ```
+
+### 诊断激活失败
+
+沙箱渲染进程对外是不透明的：它的控制台读不到，而 Harness 的崩溃报告只覆盖"应用级致命错误"。
+于是**逐条目激活失败不会在任何地方留下痕迹**——这让人很难分清"插件没运行"和"插件运行了但手势没送达"。
+
+本插件消除了这个盲点。浏览器半边把简短的标记追加进页面自身存储里的一本日记，宿主半边每秒把它
+镜像到 `$DSH_HOME/ui-zoom-trace.log`：
+
+| 标记 | 含义 |
+|---|---|
+| `M:module` | 产物已执行，工厂已注册 |
+| `A:apply` | 宿主已挂载插件，`apply` 被调用 |
+| `A:locale-failed` / `A:controller-failed` | 该步抛错，附带消息 |
+| `C:restored=<档位>` | 已应用存储中的偏好 |
+| `C:selftest=<值>` | 从引擎读回的行内 `zoom` 声明（`<empty>` 表示"被接受但不生效"） |
+| `C:listening` | 按键监听已安装 |
+| `A:ready:<档位>` | 插件已完全挂载 |
+| `K:<键码>:<修饰键>` | 有一次按键到达了文档（由独立的见证监听记录） |
+
+日记上限 200 条，每次写入都做了失败包含，且不改变插件的任何行为。
 
 ## 开发
 

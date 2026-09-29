@@ -84,15 +84,13 @@ export interface LocaleService {
 }
 
 /**
- * The plugin context handed to the browser half's `apply`.
+ * The lifetime surface both halves receive.
  *
- * Only the members this plugin uses are declared; the real object carries the
- * full Cordis surface. `get` is the undeclared-service lookup, which never
- * throws so optional peers can be probed.
+ * `get` is the undeclared-service lookup, which never throws so optional peers
+ * can be probed. Only the members this plugin uses are declared; the real object
+ * carries the full Cordis surface.
  */
-export interface Context {
-	readonly shortcuts: ShortcutsService;
-	readonly locale: LocaleService;
+export interface EffectContext {
 	/**
 	 * Run one setup step and register its cleanup with the plugin's lifetime.
 	 * @param callback - setup; may return a disposer.
@@ -105,4 +103,16 @@ export interface Context {
 	 * @returns the service, or undefined when absent.
 	 */
 	get(name: string): unknown;
+}
+
+/**
+ * The browser half's context.
+ *
+ * `shortcuts` and `locale` are ordinary properties because the manifest declares
+ * them in `dsh.client.inject`, and Cordis only mounts the half once both are
+ * available.
+ */
+export interface Context extends EffectContext {
+	readonly shortcuts: ShortcutsService;
+	readonly locale: LocaleService;
 }
